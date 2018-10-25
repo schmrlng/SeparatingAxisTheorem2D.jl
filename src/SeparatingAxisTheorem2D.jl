@@ -220,7 +220,7 @@ _intersecting(S::CompoundShape, X::Union{Point,AbstractPolygon,Circle}) = _inter
 # Transformations
 ## Inflation
 function inflate(L::AbstractLineSegment, ε; round_corners=true)
-    n = normalize(L.normal)
+    n = normalize(L isa LineSegment ? L.normal : perp(L.edge))
     if round_corners
         CompoundShape(Polygon(SVector(L.v + ε*n, L.w + ε*n, L.w - ε*n, L.v - ε*n)), Circle(L.v, ε), Circle(L.w, ε))
     else
