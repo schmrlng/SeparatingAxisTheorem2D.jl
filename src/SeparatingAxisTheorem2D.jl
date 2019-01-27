@@ -40,16 +40,20 @@ end
 @inline unrolled_all(f, tup::NTuple{N,Any}) where {N} = unrolled_all(i -> (Base.@_inline_meta; f(tup[i])), Val(N))
 
 # Shape Definitions
-const Point = AbstractVector
+const Point = AbstractVector{<:Number}
 abstract type Shape2D{T} end
 abstract type AbstractPolygon{T} <: Shape2D{T} end
 ## BoundingBox
 struct AxisAlignedBoundingBox{T} <: AbstractPolygon{T}
-    xrange::SVector{2,T}
-    yrange::SVector{2,T}
+    bounds::SMatrix{2,2,T,4}
 end
-AxisAlignedBoundingBox(xr, yr) = (T = eltype(xr); AxisAlignedBoundingBox{T}(SVector{2,T}(xr), SVector{2,T}(yr)))
+AxisAlignedBoundingBox((xl, xu), (yl, yu)) = AxisAlignedBoundingBox(SMatrix{2,2}(xl, yl, xu, yu))
+AxisAlignedBoundingBox(x::Number, y::Number) = AxisAlignedBoundingBox(SMatrix{2,2}(-x/2, -y/2, x/2, y/2))
 const AABB{T} = AxisAlignedBoundingBox{T}
+Base.getindex(B::AABB, i, j=:) = B.bounds[i,j]
+getAABB(aabb::AABB) = aabb
+getAABB(X::Shape2D) = X.aabb
+getAABB((x, y)::Point) = AABB((x, x), (y, y))
 
 ## Line Segments
 abstract type AbstractLineSegment{T} <: AbstractPolygon{T} end
@@ -60,7 +64,7 @@ struct SimpleLineSegment{T} <: AbstractLineSegment{T}
     edge::SVector{2,T}
     aabb::AABB{T}
 
-    SimpleLineSegment{T}(v, w) where {T} = new(v, w, w - v, AABB(minmaxV(v[1], w[1]), minmaxV(v[2], w[2])))
+    SimpleLineSegment{T}(v, w) where {T} = new(v, w, w - v, AABB(minmax(v[1], w[1]), minmax(v[2], w[2])))
 end
 SimpleLineSegment(v, w) = (T = eltype(v); SimpleLineSegment{T}(SVector{2,T}(v), SVector{2,T}(w)))
 
@@ -77,7 +81,7 @@ struct LineSegment{T} <: AbstractLineSegment{T}
         edge   = w - v
         normal = normalize_normals ? normalize(perp(edge)) : perp(edge)
         ndotv  = normal⋅v
-        aabb   = AABB(minmaxV(v[1], w[1]), minmaxV(v[2], w[2]))
+        aabb   = AABB(minmax(v[1], w[1]), minmax(v[2], w[2]))
         new(v, w, edge, normal, ndotv, aabb)
     end
 end
@@ -96,12 +100,13 @@ struct Polygon{N,T} <: AbstractPolygon{T}
         normals  = normalize_normals ? normalize.(perp.(edges)) : perp.(edges)
         nextrema = projectNextrema.(Ref(points), normals)
         @assert last.(nextrema) ≈ dot.(points, normals) "Polygon must be convex"
-        aabb     = AABB(SVector(extrema(first.(points))), SVector(extrema(last.(points))))
+        aabb     = AABB(extrema(first.(points)), extrema(last.(points)))
         new(points, edges, normals, nextrema, aabb)
     end
 end
 Polygon(points) = (N = length(points); T = eltype(eltype(points)); Polygon{N,T}(SVector{N,SVector{2,T}}(points)))
 Polygon(points...) = Polygon(points)
+Polygon(B::AABB) = Polygon(SVector.(B[1][SVector(1,2,2,1)], B[2][SVector(1,1,2,2)]))
 
 ## Triangle
 Triangle((P1, P2, P3)) = ccw(P1, P2, P3) ? Polygon(P1, P2, P3) : Polygon(P1, P3, P2)
@@ -116,11 +121,12 @@ struct Circle{T} <: Shape2D{T}
 
     function Circle{T}(c, r) where {T}
         @assert r > 0 "Circle radius $r must be positive"
-        aabb = AABB(SVector(c[1] - r, c[1] + r), SVector(c[2] - r, c[2] + r))
+        aabb = AABB((c[1] - r, c[1] + r), (c[2] - r, c[2] + r))
         new(c, r, r*r, aabb)
     end
 end
 Circle(c, r) = (T = eltype(c); Circle{T}(SVector{2,T}(c), T(r)))
+Circle(r) = (T = eltype(r); Circle{T}(zeros(SVector{2,T}), r))
 
 ## Compound Shapes
 struct CompoundShape{PS,T} <: Shape2D{T}
@@ -128,8 +134,8 @@ struct CompoundShape{PS,T} <: Shape2D{T}
     aabb ::AABB{T}
 
     function CompoundShape{PS,T}(parts) where {PS,T}
-        aabb = AABB(SVector(minimum(getAABB(P).xrange[1] for P in parts), maximum(getAABB(P).xrange[2] for P in parts)),
-                    SVector(minimum(getAABB(P).yrange[1] for P in parts), maximum(getAABB(P).yrange[2] for P in parts)))
+        aabb = AABB((minimum(getAABB(P)[1,1] for P in parts), maximum(getAABB(P)[1,2] for P in parts)),
+                    (minimum(getAABB(P)[2,1] for P in parts), maximum(getAABB(P)[2,2] for P in parts)))
         new(parts, aabb)
     end
 end
@@ -137,7 +143,7 @@ CompoundShape(parts::Shape2D{T}...) where {T} = CompoundShape{typeof(parts),T}(p
 CompoundShape(parts::Vector{S}) where {T,S<:Shape2D{T}} = CompoundShape{Vector{S},T}(parts)
 
 # Projecting Shapes onto Axes
-projectNextrema(B::AABB,                n) = minmaxV(n[1].*B.xrange) + minmaxV(n[2].*B.yrange)
+projectNextrema(B::AABB,                n) = minmaxV(n[1].*B[1]) + minmaxV(n[2].*B[2])
 projectNextrema(L::AbstractLineSegment, n) = minmaxV(L.v⋅n, L.w⋅n)
 projectNextrema(P::Polygon,             n) = projectNextrema(P.points, n)
 projectNextrema(C::Circle,              n) = (d = C.c⋅n; r = C.r*norm(n); SVector(d - r, d + r))
@@ -153,14 +159,11 @@ separating_axis(P::Polygon, S::Shape2D, i::Integer) = !overlapping(P.nextrema[i]
 intersecting(X, Y) = !AABBseparated(X, Y) && _intersecting(X, Y)
 intersecting(X, Y, f) = intersecting(X, f(Y))
 ## Special Cases (Point/AABB)
-intersecting(B1::AABB, B2::AABB)  = overlapping(B1.xrange, B2.xrange) && overlapping(B1.yrange, B2.yrange)
-intersecting( p::Point, B::AABB)  = ininterval(p[1], B.xrange) && ininterval(p[2], B.yrange)
+intersecting(B1::AABB, B2::AABB)  = overlapping(B1[1], B2[1]) && overlapping(B1[2], B2[2])
+intersecting( p::Point, B::AABB)  = ininterval(p[1], B[1]) && ininterval(p[2], B[2])
 intersecting( B::AABB,  p::Point) = intersecting(p, B)
 
 ## Broadphase
-getAABB(aabb::AABB) = aabb
-getAABB(X::Shape2D) = X.aabb
-getAABB(p::Point)   = AABB((p[1], p[1]), (p[2], p[2]))
 AABBseparated(S1::Shape2D, S2::Shape2D) = !intersecting(getAABB(S1), getAABB(S2))
 AABBseparated( p::Point,    S::Shape2D) = !intersecting(p, getAABB(S))
 AABBseparated( S::Shape2D,  p::Point)   = AABBseparated(p, S)
@@ -184,9 +187,7 @@ _intersecting(L1::AbstractLineSegment, L2::AbstractLineSegment) = ccw(L1.v, L2.v
                                                                   ccw(L1.v, L1.w, L2.v) != ccw(L1.v, L1.w, L2.w)
 
 ## Narrowphase - Circle
-function _intersecting(C::Circle, B::AABB)
-    _intersecting(clamp.(C.c, SVector(B.xrange[1], B.yrange[1]), SVector(B.xrange[2], B.yrange[2])), C)
-end
+_intersecting(C::Circle, B::AABB) = _intersecting(clamp.(C.c, B[:,1], B[:,2]), C)
 function _intersecting(C::Circle, L::AbstractLineSegment)
     _intersecting(L.v, C) && return true
     _intersecting(L.w, C) && return true
@@ -200,7 +201,7 @@ function _intersecting(C::Circle, P::Polygon{N}) where {N}
         pi2c = C.c - P.points[i]
         vr = voronoi_region(pi2c, P.edges[i])
         if vr == 0
-            dot(pi2c, P.normals[i]) > C.r*norm(P.normals[i]) && return false
+            pi2c⋅P.normals[i] > C.r*norm(P.normals[i]) && return false
         else
             j = wrap1(i + vr, N)
             pj2c = C.c - P.points[j]
@@ -219,6 +220,8 @@ _intersecting(S::CompoundShape, X::Union{Point,AbstractPolygon,Circle}) = _inter
 
 # Transformations
 ## Inflation
+inflate(p::Point, ε; round_corners=true) = Circle(p, ε)
+inflate(B::AABB,  ε; round_corners=true) = inflate(Polygon(B), ε, round_corners=round_corners)
 function inflate(L::AbstractLineSegment, ε; round_corners=true)
     n = normalize(L isa LineSegment ? L.normal : perp(L.edge))
     if round_corners
@@ -244,15 +247,18 @@ inflate(S::CompoundShape, ε; round_corners=true) = CompoundShape(inflate.(S.par
 (f::Translation)(S::Shape2D) = transform(f, S)    # julia#14919 --> AbstractAffineMap
 (f::LinearMap)(S::Shape2D)   = transform(f, S)
 (f::AffineMap)(S::Shape2D)   = transform(f, S)
+transform(f::Translation,                B::AABB)          = AABB(B.bounds .+ f.translation)
+transform(f::Union{LinearMap,AffineMap}, B::AABB)          = transform(f, Polygon(B))
 transform(f::AbstractAffineMap,          L::LineSegment)   = LineSegment(f(L.v), f(L.w))
 transform(f::AbstractAffineMap,          P::Polygon)       = Polygon(f.(P.points))
 transform(f::Translation,                C::Circle)        = Circle(f(C.c), C.r)
-transform(f::Union{LinearMap,AffineMap}, C::Circle)        = Circle(f(C.c), norm(f.linear[:,1]))
+transform(f::Union{LinearMap,AffineMap}, C::Circle)        = Circle(f(C.c), norm(f.linear[:,1]))    # isometries only
 transform(f::AbstractAffineMap,          S::CompoundShape) = CompoundShape(f.(S.parts))
 
 ## Sweep
 sweep(X, f1, f2) = sweep(f1(X), f2(X))
 sweep(v::Point, w::Point) = LineSegment(v, w)
+sweep(B1::AABB, B2::AABB) = sweep(Polygon(B1), Polygon(B2))
 function sweep(L1::AbstractLineSegment, L2::AbstractLineSegment; check_degenerate=false)
     if intersecting(L1, L2)
         λ = [L1.edge L2.edge]\(L2.v - L1.v)
@@ -284,25 +290,27 @@ sweep(C1::Circle,  C2::Circle)  = inflate(SimpleLineSegment(C1.c, C2.c), C1.r, r
 sweep(S1::CompoundShape, S2::CompoundShape) = CompoundShape(sweep.(S1.parts, S2.parts)...)
 
 # Sweep Intersection Checking
-combined_AABB(X, Y) = AABB(enclosing_interval(getAABB(X).xrange, getAABB(Y).xrange),
-                           enclosing_interval(getAABB(X).yrange, getAABB(Y).yrange))
+combined_AABB(X, Y) = (BX = getAABB(X); BY = getAABB(Y); AABB([min.(BX[:,1], BY[:,1]) max.(BX[:,2], BY[:2])]))
+## X Static, Y Dynamic
 sweep_intersecting(X, Y, f1, f2) = sweep_intersecting(X, f1(Y), f2(Y))
 sweep_intersecting(X, Y1, Y2) = !AABBseparated(X, combined_AABB(Y1, Y2)) && _sweep_intersecting(X, Y1, Y2)
 
 _sweep_intersecting(X, Y1, Y2) = intersecting(X, sweep(Y1, Y2))
 
+## X and Y Dynamic
+sweep_intersecting(X, fX1, fX2, Y, fY1, fY2) = sweep_intersecting(X, Y, inv(fX1) ∘ fY1, inv(fX2) ∘ fY2)
+
 # Distance Computation
 ## TODO: port over from old MotionPlanning.jl code
 
 # Plot Recipes
-@recipe function f(B::AxisAlignedBoundingBox; dims=(1,2))
+@recipe function f(B::AABB; dims=(1,2))
     seriestype :=  :shape
     fillcolor  --> :match
     linecolor  --> :match
     label      --> ""
     x, y = dims
-    coords = (SVector(B.xrange[1], B.xrange[2], B.xrange[2], B.xrange[1]),
-              SVector(B.yrange[1], B.yrange[1], B.yrange[2], B.yrange[2]))
+    coords = (B[1][SVector(1,2,2,1)], B[2][SVector(1,1,2,2)])
     coords[x], coords[y]
 end
 

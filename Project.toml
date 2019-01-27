@@ -1,7 +1,7 @@
 name = "SeparatingAxisTheorem2D"
 uuid = "33f35c42-577e-5c66-8569-bbf1771cbf32"
 authors = ["Ed Schmerling <ednerd@gmail.com>"]
-version = "0.1.0"
+version = "1.0.0"
 
 [deps]
 CoordinateTransformations = "150eb455-5306-5404-9cee-2592286d6298"
