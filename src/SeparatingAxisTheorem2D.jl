@@ -237,11 +237,11 @@ function inflate(P::Polygon, ε; round_corners=true)
     !round_corners && return Polygon(P.points .+ ε.*push_out_corner_vector.(circshift1(normals), normals))
     CompoundShape(
         Polygon(vec([P.points .+ ε.*circshift1(normals) P.points .+ ε.*normals]')),
-        Circle.(P.points, Ref(ε))...
+        Circle.(P.points, ε)...
     )
 end
 inflate(C::Circle,        ε; round_corners=true) = Circle(C.c, C.r + ε)
-inflate(S::CompoundShape, ε; round_corners=true) = CompoundShape(inflate.(S.parts, Ref(ε), round_corners=round_corners))
+inflate(S::CompoundShape, ε; round_corners=true) = CompoundShape(inflate.(S.parts, ε, round_corners=round_corners)...)
 
 ## Affine Transformation
 (f::Translation)(S::Shape2D) = transform(f, S)    # julia#14919 --> AbstractAffineMap
@@ -253,7 +253,7 @@ transform(f::AbstractAffineMap,          L::LineSegment)   = LineSegment(f(L.v),
 transform(f::AbstractAffineMap,          P::Polygon)       = Polygon(f.(P.points))
 transform(f::Translation,                C::Circle)        = Circle(f(C.c), C.r)
 transform(f::Union{LinearMap,AffineMap}, C::Circle)        = Circle(f(C.c), norm(f.linear[:,1]))    # isometries only
-transform(f::AbstractAffineMap,          S::CompoundShape) = CompoundShape(f.(S.parts))
+transform(f::AbstractAffineMap,          S::CompoundShape) = CompoundShape(f.(S.parts)...)
 
 ## Sweep
 sweep(X, f1, f2) = sweep(f1(X), f2(X))
